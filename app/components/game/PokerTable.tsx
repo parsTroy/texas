@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { Card, GameState, Player } from "../../types/poker";
+import io from "socket.io-client";
 
 interface PokerTableProps {
   gameState: GameState;
@@ -18,10 +19,11 @@ interface ChipStack {
 
 // Add game state notification types
 type GameNotification = {
-  type: 'waiting-for-players' | 'new-game' | 'game-end' | 'hand-winner';
+  type: 'waiting-for-players' | 'new-game' | 'game-end' | 'hand-winner' | 'dealing' | 'phase-change' | 'action-required';
   message: string;
   winner?: Player;
   duration?: number;
+  nextGameCountdown?: number;
 };
 
 // Add chip stack images for different denominations
@@ -75,19 +77,53 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
   const currentPlayer = gameState.players.find(p => p.id === playerId);
   const isPlayerTurn = currentPlayer?.isTurn ?? false;
 
-  // Calculate min raise
+  // Calculate min raise - but don't enforce it for all-in situations
   const minRaise = Math.max(
     gameState.currentBet * 2,
     gameState.currentBet + gameState.bigBlind
   );
 
-  // Calculate pot percentages
+  // Calculate the actual call amount (considering all-in situations)
+  const callAmount = Math.min(
+    gameState.currentBet - (currentPlayer?.currentBet ?? 0),
+    currentPlayer?.chips ?? 0
+  );
+
+  // Calculate available chips (accounting for current bet)
+  const availableChips = (currentPlayer?.chips ?? 0) + (currentPlayer?.currentBet ?? 0);
+
+  // Calculate pot percentages (capped by available chips)
   const potPercentages = {
-    ten: Math.floor(gameState.pot * 0.1),
-    quarter: Math.floor(gameState.pot * 0.25),
-    half: Math.floor(gameState.pot * 0.5),
-    eightyPercent: Math.floor(gameState.pot * 0.8)
+    ten: Math.max(minRaise, Math.min(Math.floor(gameState.pot * 0.1), availableChips)),
+    quarter: Math.max(minRaise, Math.min(Math.floor(gameState.pot * 0.25), availableChips)),
+    half: Math.max(minRaise, Math.min(Math.floor(gameState.pot * 0.5), availableChips)),
+    eightyPercent: Math.max(minRaise, Math.min(Math.floor(gameState.pot * 0.8), availableChips))
   };
+
+  // Function to handle all-in action
+  const handleAllIn = () => {
+    if (currentPlayer?.chips) {
+      // Update the custom amount to all-in value instead of immediate action
+      setCustomAmount(currentPlayer.chips + (currentPlayer.currentBet ?? 0));
+    }
+  };
+
+  // Handle notifications from server
+  useEffect(() => {
+    const socket = io(process.env.NEXT_PUBLIC_WEBSOCKET_URL || "http://localhost:3001");
+    
+    socket.on("notification", (newNotification: GameNotification) => {
+      setNotification(newNotification);
+      if (newNotification.duration && newNotification.duration > 0) {
+        setTimeout(() => setNotification(null), newNotification.duration);
+      }
+    });
+
+    return () => {
+      socket.off("notification");
+      socket.close();
+    };
+  }, []);
 
   // Handle game state notifications
   useEffect(() => {
@@ -101,7 +137,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
     };
 
     // Clear any existing notification if phase changes
-    if (notification?.type !== 'waiting-for-players') {
+    if (notification?.type !== 'waiting-for-players' && notification?.type !== 'dealing' && notification?.type !== 'phase-change') {
       setNotification(null);
     }
 
@@ -117,14 +153,22 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
         message: 'New Game Starting...',
         duration: 5000 // 5 seconds
       });
-    } else if (gameState.phase === 'game-end') {
-      const winner = gameState.players.find(p => p.isWinner);
+    } else if (gameState.phase === 'game-end' || gameState.phase === 'showdown') {
+      // Find winner either by isWinner flag or last active player
+      const winner = gameState.players.find(p => p.isWinner) || 
+                    gameState.players.find(p => p.isActive);
+      
       if (winner) {
+        const winType = gameState.phase === 'showdown' ? 'showdown' : 'fold';
+        const message = winType === 'showdown' 
+          ? `${winner.name} wins with the best hand!`
+          : `${winner.name} wins - all other players folded!`;
+
         showNotification({
           type: 'game-end',
-          message: `${winner.name} wins the hand!`,
+          message,
           winner,
-          duration: 12000 // Increased to 12 seconds
+          duration: 10000 // 10 seconds for winner notification
         });
       }
     }
@@ -134,7 +178,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
         clearTimeout(timeoutId);
       }
     };
-  }, [gameState.phase, gameState.players.length]);
+  }, [gameState.phase, gameState.players, notification?.type]);
 
   useEffect(() => {
     if (isPlayerTurn) {
@@ -150,7 +194,8 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
     <div className="relative w-full max-w-4xl aspect-[2/1] mx-auto mt-24">
       {/* Game State Notifications */}
       {notification && (
-        <div className="fixed inset-0 flex items-center justify-center z-30 pointer-events-none">
+        <div className="fixed inset-0 flex items-center justify-center z-50">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
           <div className={`transform transition-all duration-500 ${
             notification ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
           }`}>
@@ -167,22 +212,41 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
                 </div>
               </div>
             )}
-            {notification.type === 'new-game' && (
+            {(notification.type === 'dealing' || notification.type === 'phase-change') && (
               <div className="bg-gradient-to-b from-blue-500 to-blue-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg">
-                <div className="text-4xl font-bold mb-2">🎲 New Game</div>
-                <div className="text-xl text-white/90">Dealing cards...</div>
+                <div className="text-4xl font-bold mb-2">🎲 {notification.type === 'dealing' ? 'Dealing Cards' : 'Next Phase'}</div>
+                <div className="text-xl text-white/90">{notification.message}</div>
+              </div>
+            )}
+            {notification.type === 'action-required' && (
+              <div className="bg-gradient-to-b from-green-500 to-green-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg">
+                <div className="text-4xl font-bold mb-2">🎮 Your Turn</div>
+                <div className="text-xl text-white/90">{notification.message}</div>
               </div>
             )}
             {notification.type === 'game-end' && notification.winner && (
-              <div className="bg-gradient-to-b from-yellow-500 to-amber-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg">
-                <div className="text-4xl font-bold mb-2">🏆 Winner!</div>
-                <div className="text-2xl">{notification.winner.name}</div>
-                <div className="text-xl text-white/90 mt-2">
-                  Wins {gameState.pot} chips
+              <div className="bg-gradient-to-b from-yellow-500 to-amber-600 text-white px-12 py-8 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg animate-bounce-small">
+                <div className="text-6xl font-bold mb-4 text-center">🏆</div>
+                <div className="text-4xl font-bold text-center mb-4">{notification.winner.name}</div>
+                <div className="text-2xl text-white/90 text-center">
+                  {notification.message}
                 </div>
-                <div className="text-sm text-white/70 mt-4">
-                  Next game starting soon...
+                <div className="text-xl text-white/90 text-center mt-4">
+                  Wins {gameState.pot} chips!
                 </div>
+                {notification.nextGameCountdown && (
+                  <div className="mt-6 text-center">
+                    <div className="text-lg text-white/90 mb-2">
+                      Next hand in: {notification.nextGameCountdown}s
+                    </div>
+                    <button
+                      onClick={() => onAction("sitOut")}
+                      className="px-4 py-2 bg-red-500/80 hover:bg-red-600/80 rounded-lg text-sm transition-colors"
+                    >
+                      Sit Out Next Hand
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -460,88 +524,99 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
                 onClick={() => onAction("call")}
                 className="px-4 py-2 bg-gradient-to-b from-blue-500 to-blue-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-blue-600 hover:to-blue-700 transform hover:scale-105 transition-all duration-200"
               >
-                Call ({gameState.currentBet - (currentPlayer?.currentBet ?? 0)})
+                {callAmount === (currentPlayer?.chips ?? 0) ? (
+                  `All-in (${callAmount})`
+                ) : (
+                  `Call (${callAmount})`
+                )}
               </button>
             )}
-            <button
-              onClick={() => onAction("raise", currentPlayer?.chips ?? 0)}
-              className="px-4 py-2 bg-gradient-to-b from-purple-500 to-purple-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-purple-600 hover:to-purple-700 transform hover:scale-105 transition-all duration-200"
-            >
-              All-In
-            </button>
+            {currentPlayer?.chips && currentPlayer.chips > 0 && (
+              <button
+                onClick={handleAllIn}
+                className="px-4 py-2 bg-gradient-to-b from-purple-500 to-purple-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-purple-600 hover:to-purple-700 transform hover:scale-105 transition-all duration-200"
+              >
+                All-in ({currentPlayer.chips})
+              </button>
+            )}
           </div>
 
           {/* Bet Size Controls */}
           <div className="grid grid-cols-2 gap-2">
             {/* Pot Percentage Buttons */}
-            <button
-              onClick={() => {
-                const amount = Math.max(minRaise, Math.min(potPercentages.ten, currentPlayer?.chips ?? 0));
-                setCustomAmount(amount);
-              }}
-              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
-            >
-              10% Pot ({potPercentages.ten})
-            </button>
-            <button
-              onClick={() => {
-                const amount = Math.max(minRaise, Math.min(potPercentages.quarter, currentPlayer?.chips ?? 0));
-                setCustomAmount(amount);
-              }}
-              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
-            >
-              25% Pot ({potPercentages.quarter})
-            </button>
-            <button
-              onClick={() => {
-                const amount = Math.max(minRaise, Math.min(potPercentages.half, currentPlayer?.chips ?? 0));
-                setCustomAmount(amount);
-              }}
-              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
-            >
-              50% Pot ({potPercentages.half})
-            </button>
-            <button
-              onClick={() => {
-                const amount = Math.max(minRaise, Math.min(potPercentages.eightyPercent, currentPlayer?.chips ?? 0));
-                setCustomAmount(amount);
-              }}
-              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
-            >
-              80% Pot ({potPercentages.eightyPercent})
-            </button>
+            {Object.entries(potPercentages).map(([key, amount]) => (
+              <button
+                key={key}
+                onClick={() => setCustomAmount(amount)}
+                disabled={amount < minRaise && amount !== (currentPlayer?.chips ?? 0)}
+                className={`px-3 py-2 bg-gradient-to-b text-white rounded-lg text-sm font-semibold shadow-lg transition-all duration-200 ${
+                  amount >= minRaise || amount === (currentPlayer?.chips ?? 0)
+                    ? "from-green-500/80 to-green-600/80 hover:from-green-600/80 hover:to-green-700/80"
+                    : "from-gray-500/80 to-gray-600/80 opacity-50 cursor-not-allowed"
+                }`}
+              >
+                {key === 'ten' ? '10%' : 
+                 key === 'quarter' ? '25%' : 
+                 key === 'half' ? '50%' : '80%'} Pot ({amount})
+                {amount === (currentPlayer?.chips ?? 0) && ' (All-in)'}
+              </button>
+            ))}
           </div>
 
           {/* Custom Raise Input */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <input
-                type="number"
-                value={customAmount}
-                onChange={(e) => {
-                  const value = Number(e.target.value);
-                  setCustomAmount(Math.max(minRaise, Math.min(value, currentPlayer?.chips ?? 0)));
-                }}
-                className="w-full px-3 py-2 rounded-lg text-sm bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                min={minRaise}
-                max={currentPlayer?.chips ?? 0}
-                placeholder={`Min raise: ${minRaise}`}
-              />
-              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-white/50 text-xs">
-                Min: {minRaise}
-              </span>
+          <div className="flex flex-col gap-2">
+            <div className="text-xs text-white/70 px-1">
+              {currentPlayer?.chips && currentPlayer.chips <= minRaise ? (
+                "You can only go all-in"
+              ) : (
+                `Min raise: ${minRaise} chips`
+              )}
             </div>
-            <button
-              onClick={() => onAction("raise", customAmount)}
-              disabled={customAmount < minRaise}
-              className={`px-4 py-2 bg-gradient-to-b text-white rounded-lg text-sm font-semibold shadow-lg transform hover:scale-105 transition-all duration-200 ${
-                customAmount >= minRaise
-                  ? "from-green-500 to-green-600 hover:from-green-600 hover:to-green-700"
-                  : "from-gray-500 to-gray-600 opacity-50 cursor-not-allowed"
-              }`}
-            >
-              Raise to {customAmount}
-            </button>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="number"
+                  value={customAmount}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    const maxAmount = currentPlayer?.chips ?? 0;
+                    
+                    // If player doesn't have enough for min raise, only allow all-in
+                    if (maxAmount <= minRaise) {
+                      setCustomAmount(maxAmount);
+                    } else if (value >= maxAmount) {
+                      // If trying to bet more than max, set to all-in
+                      setCustomAmount(maxAmount);
+                    } else {
+                      // Otherwise, allow any amount between min raise and max chips
+                      setCustomAmount(Math.max(value, minRaise));
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-lg text-sm bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  min={Math.min(minRaise, currentPlayer?.chips ?? 0)}
+                  max={currentPlayer?.chips ?? 0}
+                  placeholder="Enter amount"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  const amount = customAmount === (currentPlayer?.chips ?? 0) ? 
+                    currentPlayer?.chips : 
+                    customAmount;
+                  onAction("raise", amount);
+                }}
+                disabled={customAmount === 0 || (customAmount < minRaise && customAmount !== (currentPlayer?.chips ?? 0))}
+                className={`whitespace-nowrap px-4 py-2 bg-gradient-to-b text-white rounded-lg text-sm font-semibold shadow-lg transform hover:scale-105 transition-all duration-200 ${
+                  (customAmount >= minRaise || customAmount === (currentPlayer?.chips ?? 0)) && customAmount > 0
+                    ? "from-green-500 to-green-600 hover:from-green-600 hover:to-green-700"
+                    : "from-gray-500 to-gray-600 opacity-50 cursor-not-allowed"
+                }`}
+              >
+                {customAmount === (currentPlayer?.chips ?? 0) ? 
+                  `All-in (${customAmount})` : 
+                  `Raise to ${customAmount}`}
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -563,4 +638,21 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       </div>
     </div>
   );
+}
+
+const styles = `
+  @keyframes bounce-small {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+  .animate-bounce-small {
+    animation: bounce-small 2s infinite;
+  }
+`;
+
+// Add the styles to the document
+if (typeof document !== 'undefined') {
+  const styleSheet = document.createElement('style');
+  styleSheet.textContent = styles;
+  document.head.appendChild(styleSheet);
 }

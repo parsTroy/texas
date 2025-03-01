@@ -11,10 +11,16 @@ export interface Player {
   name: string;
   chips: number;
   cards: Card[];
+  isActive: boolean;
   currentBet: number;
   isTurn: boolean;
   isDealer: boolean;
-  isWinner?: boolean;
+  hasActed: boolean;
+  isAllIn: boolean;
+  isWinner: boolean;
+  isSittingOut: boolean;
+  seatNumber: number | null;
+  isReadyToPlay: boolean;
 }
 
 export interface GameState {
@@ -28,6 +34,8 @@ export interface GameState {
   smallBlind: number;
   bigBlind: number;
   lastBetPlayerId: string | null;
+  maxPlayers: number;
+  availableSeats: number[];
 }
 
 export interface GameAction {
@@ -36,10 +44,14 @@ export interface GameAction {
   amount?: number;
 }
 
-export interface TableConfig {
-  maxPlayers: number;
-  smallBlind: number;
-  bigBlind: number;
+export interface TableInfo {
+  availableSeats: number[];
   minBuyIn: number;
+  suggestedBuyIn: number;
   maxBuyIn: number;
+}
+
+export interface BuyInRequest {
+  amount: number;
+  seatNumber: number;
 } 

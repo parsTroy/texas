@@ -2,8 +2,16 @@
 
 import React, { useEffect, useState } from "react";
 import { PokerTable } from "./components/game/PokerTable";
+import { TableJoinDialog } from "./components/game/TableJoinDialog";
 import { GameState } from "./types/poker";
 import io from "socket.io-client";
+
+interface TableInfo {
+  availableSeats: number[];
+  minBuyIn: number;
+  suggestedBuyIn: number;
+  maxBuyIn: number;
+}
 
 export default function Home() {
   const [gameState, setGameState] = useState<GameState>({
@@ -17,11 +25,15 @@ export default function Home() {
     smallBlind: 10,
     bigBlind: 20,
     lastBetPlayerId: null,
+    maxPlayers: 6,
+    availableSeats: [],
   });
   const [playerId, setPlayerId] = useState<string>("");
   const [socket, setSocket] = useState<any>(null);
   const [playerName, setPlayerName] = useState("");
   const [isJoining, setIsJoining] = useState(false);
+  const [showJoinDialog, setShowJoinDialog] = useState(false);
+  const [tableInfo, setTableInfo] = useState<TableInfo | null>(null);
 
   useEffect(() => {
     const newSocket = io(process.env.NEXT_PUBLIC_WEBSOCKET_URL || "http://localhost:3001");
@@ -35,6 +47,16 @@ export default function Home() {
       setPlayerId(id);
     });
 
+    newSocket.on("tableInfo", (info: TableInfo) => {
+      setTableInfo(info);
+      setShowJoinDialog(true);
+    });
+
+    newSocket.on("buyInError", (error: string) => {
+      // Handle buy-in error (you could show this in a toast notification)
+      console.error(error);
+    });
+
     return () => {
       newSocket.close();
     };
@@ -46,9 +68,15 @@ export default function Home() {
     socket.emit("joinGame", { name: playerName });
   };
 
+  const handleBuyIn = (seatNumber: number, amount: number) => {
+    if (!socket) return;
+    socket.emit("buyIn", { seatNumber, amount });
+    setShowJoinDialog(false);
+  };
+
   const handleAction = (action: string, amount?: number) => {
     if (!socket) return;
-    socket.emit("gameAction", { action, amount, playerId });
+    socket.emit("action", { action, amount });
   };
 
   if (!playerId) {
@@ -124,6 +152,16 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-gray-900 p-8">
+      {showJoinDialog && tableInfo && (
+        <TableJoinDialog
+          availableSeats={tableInfo.availableSeats}
+          minBuyIn={tableInfo.minBuyIn}
+          suggestedBuyIn={tableInfo.suggestedBuyIn}
+          onJoin={handleBuyIn}
+          onCancel={() => setShowJoinDialog(false)}
+          players={gameState.players}
+        />
+      )}
       <PokerTable
         gameState={gameState}
         onAction={handleAction}
