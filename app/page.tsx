@@ -52,6 +52,11 @@ export default function Home() {
       setShowJoinDialog(true);
     });
 
+    newSocket.on("needsBuyIn", (info: TableInfo) => {
+      setTableInfo(info);
+      setShowJoinDialog(true);
+    });
+
     newSocket.on("buyInError", (error: string) => {
       // Handle buy-in error (you could show this in a toast notification)
       console.error(error);
@@ -76,6 +81,21 @@ export default function Home() {
 
   const handleAction = (action: string, amount?: number) => {
     if (!socket) return;
+    
+    if (action === "buyMoreChips") {
+      const player = gameState.players.find(p => p.id === playerId);
+      if (player && player.seatNumber !== null) {
+        setTableInfo({
+          availableSeats: [player.seatNumber],
+          minBuyIn: gameState.bigBlind,
+          suggestedBuyIn: gameState.bigBlind * 100,
+          maxBuyIn: Infinity
+        });
+        setShowJoinDialog(true);
+      }
+      return;
+    }
+    
     socket.emit("action", { action, amount });
   };
 

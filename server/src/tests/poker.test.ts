@@ -1,4 +1,7 @@
+import { describe, test, expect, beforeEach } from '@jest/globals';
 import { GameState, Player } from '../types/poker';
+
+const BIG_BLIND = 20;
 
 // Mock game state setup
 function createMockGameState(players: Player[]): GameState {
@@ -54,14 +57,17 @@ describe('Poker Game Check Action Tests', () => {
   test('Pre-flop: Small blind calls, big blind checks should move to flop', () => {
     // Setup pre-flop scenario
     gameState.phase = 'pre-flop';
-    gameState.currentBet = 20; // Big blind amount
+    gameState.currentBet = BIG_BLIND;
+    
+    // Set dealer position
+    player1.isDealer = true;
     
     // Small blind has called (total bet 20)
-    player1.currentBet = 20;
+    player1.currentBet = BIG_BLIND;
     player1.hasActed = true;
     
     // Big blind player
-    player2.currentBet = 20;
+    player2.currentBet = BIG_BLIND;
     player2.isTurn = true;
     gameState.activePlayerId = player2.id;
 
@@ -130,11 +136,32 @@ function checkAction(gameState: GameState, player: Player): boolean {
   
   const activePlayers = gameState.players.filter(p => p.isActive);
   const allPlayersActed = activePlayers.every(p => p.hasActed || p.isAllIn || p.chips === 0);
-  const allBetsEqual = activePlayers.every(p => p.currentBet === gameState.currentBet || p.isAllIn || p.chips === 0);
-  const isPreFlopBigBlindCheck = gameState.phase === "pre-flop" && 
-    player.currentBet === gameState.bigBlind && 
-    activePlayers.every(p => p.currentBet === gameState.bigBlind || !p.isActive);
+  
+  // Special handling for pre-flop big blind check
+  const dealerIndex = gameState.players.findIndex(p => p.isDealer);
+  const bigBlindIndex = (dealerIndex + 2) % gameState.players.length;
+  const isPreFlop = gameState.phase === "pre-flop";
+  const isBigBlindPlayer = gameState.players.indexOf(player) === bigBlindIndex;
+  
+  // Pre-flop completion conditions:
+  // 1. We're in pre-flop phase
+  // 2. The current player is the big blind
+  // 3. All players have acted
+  // 4. Everyone has matched the big blind or folded/all-in
+  const allMatchBigBlind = activePlayers.every(p => 
+    p.currentBet === BIG_BLIND || !p.isActive || p.isAllIn || p.chips === 0
+  );
+  const isPreFlopComplete = isPreFlop && isBigBlindPlayer && allPlayersActed && allMatchBigBlind;
+
+  // Post-flop completion conditions:
+  // 1. Not in pre-flop
+  // 2. All players have acted
+  // 3. No outstanding bets (everyone has checked or folded)
+  const noOutstandingBets = activePlayers.every(p => 
+    p.currentBet === 0 || !p.isActive || p.isAllIn || p.chips === 0
+  );
+  const isPostFlopComplete = !isPreFlop && allPlayersActed && noOutstandingBets;
 
   // Return true if we should move to next phase
-  return (allPlayersActed && allBetsEqual) || isPreFlopBigBlindCheck;
+  return isPreFlopComplete || isPostFlopComplete;
 } 

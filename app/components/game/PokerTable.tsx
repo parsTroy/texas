@@ -3,6 +3,8 @@
 import React, { useState, useEffect } from "react";
 import { Card, GameState, Player } from "../../types/poker";
 import io from "socket.io-client";
+import { useSocket } from '@/app/hooks/useSocket';
+import { audioManager } from '@/app/lib/audio';
 
 interface PokerTableProps {
   gameState: GameState;
@@ -109,21 +111,50 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
   };
 
   // Handle notifications from server
+  const socket = useSocket();
+
   useEffect(() => {
-    const socket = io(process.env.NEXT_PUBLIC_WEBSOCKET_URL || "http://localhost:3001");
-    
-    socket.on("notification", (newNotification: GameNotification) => {
-      setNotification(newNotification);
-      if (newNotification.duration && newNotification.duration > 0) {
-        setTimeout(() => setNotification(null), newNotification.duration);
+    if (!socket) return;
+
+    socket.on('notification', (notification) => {
+      // Play sounds based on notification type
+      if (notification.type === 'action-required' && notification.message.includes(playerId)) {
+        audioManager.playSound('TURN_START');
+        
+        // Set timer for 30-second warning
+        const warningTimer = setTimeout(() => {
+          audioManager.playSound('TURN_WARNING');
+        }, 30000);
+        
+        return () => clearTimeout(warningTimer);
+      }
+      
+      if (notification.type === 'dealing') {
+        audioManager.playSound('DEAL_CARDS');
+      }
+      
+      if (notification.type === 'phase-change') {
+        switch (notification.message) {
+          case 'Dealing the flop...':
+            audioManager.playSound('DEAL_FLOP');
+            break;
+          case 'Dealing the turn...':
+            audioManager.playSound('DEAL_TURN');
+            break;
+          case 'Dealing the river...':
+            audioManager.playSound('DEAL_RIVER');
+            break;
+          case 'Showdown!':
+            audioManager.playSound('WINNER');
+            break;
+        }
       }
     });
 
     return () => {
-      socket.off("notification");
-      socket.close();
+      socket.off('notification');
     };
-  }, []);
+  }, [socket, playerId]);
 
   // Handle game state notifications
   useEffect(() => {
@@ -511,6 +542,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
             >
               Fold
             </button>
+            {/* Simplified check button logic */}
             {gameState.currentBet === currentPlayer?.currentBet && (
               <button
                 onClick={() => onAction("check")}
@@ -519,6 +551,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
                 Check
               </button>
             )}
+            {/* Call button - only show if there's a bet to call */}
             {gameState.currentBet > (currentPlayer?.currentBet ?? 0) && (
               <button
                 onClick={() => onAction("call")}
@@ -636,6 +669,21 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
           {gameState.phase.replace("-", " ")}
         </div>
       </div>
+
+      {/* Buy More Chips Button for sitting out players */}
+      {currentPlayer?.isSittingOut && currentPlayer.seatNumber !== null && (
+        <div className="fixed bottom-8 right-8 p-6 bg-black/60 backdrop-blur-sm rounded-xl border border-white/10 shadow-xl z-20">
+          <div className="text-white/60 text-sm italic mb-3">
+            You are sitting out
+          </div>
+          <button
+            onClick={() => onAction("buyMoreChips")}
+            className="px-4 py-2 bg-gradient-to-b from-green-500 to-green-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600 hover:to-green-700 transform hover:scale-105 transition-all duration-200"
+          >
+            Buy More Chips
+          </button>
+        </div>
+      )}
     </div>
   );
 }
