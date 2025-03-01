@@ -3,6 +3,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { GameState, Player, Card, BuyInRequest } from "./types/poker";
 import { createDeck, shuffleDeck, dealCards } from "./lib/poker";
+import { findBestHand, HandResult } from './lib/evaluator';
 
 const app = express();
 const httpServer = createServer(app);
@@ -93,7 +94,44 @@ function startTurnTimer() {
   }, TURN_TIME_LIMIT * 1000);
 }
 
+function canStartNewRound(): boolean {
+  // Count players who are ready to play (not sitting out and have chips)
+  const readyPlayers = gameState.players.filter(p => 
+    !p.isSittingOut && 
+    p.isReadyToPlay && 
+    p.chips >= BIG_BLIND
+  );
+
+  if (readyPlayers.length < 2) {
+    // Notify all players that we're waiting for more players
+    io.emit("notification", {
+      type: "waiting-for-players",
+      message: "Waiting for more players to join...",
+      duration: -1 // Show indefinitely
+    });
+    
+    // Reset game state to waiting
+    gameState.phase = "waiting-for-players";
+    gameState.communityCards = [];
+    gameState.pot = 0;
+    gameState.currentBet = 0;
+    gameState.activePlayerId = null;
+    gameState.dealerId = null;
+    gameState.lastBetPlayerId = null;
+    
+    io.emit("gameState", gameState);
+    return false;
+  }
+
+  return true;
+}
+
 function startNewRound() {
+  // First check if we can start a new round
+  if (!canStartNewRound()) {
+    return;
+  }
+
   resetPlayerActions();
   deck = shuffleDeck(createDeck());
   gameState.communityCards = [];
@@ -330,6 +368,27 @@ function resetBettingRound() {
   io.emit("gameState", gameState);
 }
 
+function handlePlayerOutOfChips(player: Player) {
+  // Add their seat back to available seats
+  if (player.seatNumber !== null) {
+    gameState.availableSeats.push(player.seatNumber);
+    gameState.availableSeats.sort((a, b) => a - b);
+  }
+
+  // Reset player state
+  player.isSittingOut = true;
+  player.isReadyToPlay = false;
+  player.isActive = false;
+  player.seatNumber = null;
+  
+  // Notify the player they need to buy in
+  io.to(player.id).emit("needsBuyIn", {
+    minBuyIn: MIN_BUY_IN,
+    suggestedBuyIn: SUGGESTED_BUY_IN,
+    availableSeats: gameState.availableSeats
+  });
+}
+
 function handleAction(action: string, amount: number | undefined, playerId: string) {
   if (playerId !== gameState.activePlayerId) return;
 
@@ -357,6 +416,15 @@ function handleAction(action: string, amount: number | undefined, playerId: stri
           gameState.pot = 0; // Clear the pot after awarding it
           winner.isWinner = true;
           
+          // Check for players who need to buy in
+          let playersNeedingBuyIn = 0;
+          gameState.players.forEach((p) => {
+            if (p.chips === 0 && !p.isSittingOut) {
+              playersNeedingBuyIn++;
+              handlePlayerOutOfChips(p);
+            }
+          });
+          
           // Start countdown for next hand
           let countdown = 5; // 5 seconds countdown
           const countdownInterval = setInterval(() => {
@@ -371,7 +439,34 @@ function handleAction(action: string, amount: number | undefined, playerId: stri
             
             if (countdown < 0) {
               clearInterval(countdownInterval);
-              startNewRound();
+              
+              // Check if we can start a new round
+              const playersWithChips = gameState.players.filter(p => 
+                !p.isSittingOut && p.isReadyToPlay && p.chips >= BIG_BLIND
+              ).length;
+
+              if (playersWithChips < 2) {
+                // Not enough players with chips, emit waiting notification
+                io.emit("notification", {
+                  type: "waiting-for-players",
+                  message: playersNeedingBuyIn > 0 
+                    ? "Waiting for players to buy back in..."
+                    : "Waiting for more players to join...",
+                  duration: -1
+                });
+                
+                // Update game state to waiting
+                gameState.phase = "waiting-for-players";
+                gameState.communityCards = [];
+                gameState.activePlayerId = null;
+                gameState.dealerId = null;
+                gameState.lastBetPlayerId = null;
+                
+                io.emit("gameState", gameState);
+              } else {
+                // We have enough players, start new round
+                startNewRound();
+              }
             }
           }, 1000);
         } else {
@@ -545,35 +640,41 @@ function moveToNextPlayer() {
 }
 
 function determineWinner() {
-  // TODO: Implement poker hand evaluation logic
-  // For now, just pick a random active player as winner
   const activePlayers = gameState.players.filter((p) => p.isActive);
   if (activePlayers.length > 0) {
-    const winner = activePlayers[Math.floor(Math.random() * activePlayers.length)];
+    // Evaluate each player's hand
+    const playerHands = activePlayers.map(player => ({
+      player,
+      handResult: findBestHand(player.cards, gameState.communityCards)
+    }));
+
+    // Sort by hand rank (highest first)
+    playerHands.sort((a, b) => b.handResult.rank - a.handResult.rank);
+
+    const winner = playerHands[0].player;
+    const winningHand = playerHands[0].handResult;
     winner.isWinner = true;
     winner.chips += gameState.pot;
+    gameState.pot = 0;
 
     // Check for players who are out of chips
+    let playersNeedingBuyIn = 0;
     gameState.players.forEach((player) => {
       if (player.chips === 0 && !player.isSittingOut) {
-        player.isSittingOut = true;
-        player.isReadyToPlay = false;
-        // Notify the player they need to buy in
-        io.to(player.id).emit("needsBuyIn", {
-          minBuyIn: MIN_BUY_IN,
-          suggestedBuyIn: SUGGESTED_BUY_IN,
-          availableSeats: [player.seatNumber as number]
-        });
+        playersNeedingBuyIn++;
+        handlePlayerOutOfChips(player);
       }
     });
 
     // Start countdown for next hand
     let countdown = 5; // 5 seconds countdown
     const countdownInterval = setInterval(() => {
+      // Emit game end notification
       io.emit("notification", {
         type: "game-end",
-        message: `${winner.name} wins!`,
+        message: `${winner.name} wins with ${winningHand.name}! ${winningHand.description}`,
         winner,
+        winningHand,
         duration: 5000,
         nextGameCountdown: countdown
       });
@@ -581,7 +682,34 @@ function determineWinner() {
       
       if (countdown < 0) {
         clearInterval(countdownInterval);
-        startNewRound();
+        
+        // Check if we can start a new round (at least 2 players with chips)
+        const playersWithChips = gameState.players.filter(p => 
+          !p.isSittingOut && p.isReadyToPlay && p.chips >= BIG_BLIND
+        ).length;
+
+        if (playersWithChips < 2) {
+          // Not enough players with chips, emit waiting notification
+          io.emit("notification", {
+            type: "waiting-for-players",
+            message: playersNeedingBuyIn > 0 
+              ? "Waiting for players to buy back in..."
+              : "Waiting for more players to join...",
+            duration: -1
+          });
+          
+          // Update game state to waiting
+          gameState.phase = "waiting-for-players";
+          gameState.communityCards = [];
+          gameState.activePlayerId = null;
+          gameState.dealerId = null;
+          gameState.lastBetPlayerId = null;
+          
+          io.emit("gameState", gameState);
+        } else {
+          // We have enough players, start new round
+          startNewRound();
+        }
       }
     }, 1000);
   }

@@ -2,8 +2,14 @@ export type Suit = "hearts" | "diamonds" | "clubs" | "spades";
 export type Rank = "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "J" | "Q" | "K" | "A";
 
 export interface Card {
-  suit: Suit;
-  rank: Rank;
+  suit: string;
+  rank: string;
+}
+
+export interface HandResult {
+  name: string;
+  description: string;
+  cards: Card[];
 }
 
 export interface Player {
@@ -28,7 +34,7 @@ export interface GameState {
   communityCards: Card[];
   pot: number;
   currentBet: number;
-  phase: "waiting-for-players" | "game-start" | "pre-flop" | "flop" | "turn" | "river" | "showdown" | "game-end";
+  phase: string;
   activePlayerId: string | null;
   dealerId: string | null;
   smallBlind: number;
@@ -54,4 +60,13 @@ export interface TableInfo {
 export interface BuyInRequest {
   amount: number;
   seatNumber: number;
+}
+
+export interface GameNotification {
+  type: 'waiting-for-players' | 'new-game' | 'game-end' | 'hand-winner' | 'dealing' | 'phase-change' | 'action-required';
+  message: string;
+  winner?: Player;
+  winningHand?: HandResult;
+  duration?: number;
+  nextGameCountdown?: number;
 } 

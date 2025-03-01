@@ -19,13 +19,25 @@ interface ChipStack {
   count: number;
 }
 
-// Add game state notification types
+// Update the game state notification types
 type GameNotification = {
   type: 'waiting-for-players' | 'new-game' | 'game-end' | 'hand-winner' | 'dealing' | 'phase-change' | 'action-required';
   message: string;
-  winner?: Player;
+  winner?: Player & { 
+    previousChips?: number;
+    winningHand?: { 
+      cards: Card[];
+      name: string;
+      description: string;
+    };
+  };
   duration?: number;
   nextGameCountdown?: number;
+  winningHand?: { 
+    cards: Card[];
+    name: string;
+    description: string;
+  };
 };
 
 // Add chip stack images for different denominations
@@ -78,6 +90,11 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
   const [notification, setNotification] = useState<GameNotification | null>(null);
   const currentPlayer = gameState.players.find(p => p.id === playerId);
   const isPlayerTurn = currentPlayer?.isTurn ?? false;
+
+  // Check if ALL active players are all-in
+  const activePlayers = gameState.players.filter(p => p.isActive && !p.isSittingOut);
+  const allInPlayers = activePlayers.filter(p => p.chips === 0);
+  const isAllInShowdown = allInPlayers.length === activePlayers.length && activePlayers.length > 1;
 
   // Calculate min raise - but don't enforce it for all-in situations
   const minRaise = Math.max(
@@ -145,9 +162,16 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
             audioManager.playSound('DEAL_RIVER');
             break;
           case 'Showdown!':
-            audioManager.playSound('WINNER');
+            // Set volume to 0.5 for winner sound
+            audioManager.playSound('WINNER', 0.5);
             break;
         }
+      }
+
+      // Play sound when ANY player goes all-in (including the current player)
+      const lowerMessage = notification.message.toLowerCase();
+      if (lowerMessage.includes('all-in') || lowerMessage.includes('went all in')) {
+        audioManager.playSound('ALL_IN', 0.7);
       }
     });
 
@@ -172,7 +196,37 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       setNotification(null);
     }
 
-    if (gameState.phase === 'waiting-for-players' && gameState.players.length === 1) {
+    // Check for busted players first
+    const bustedPlayers = gameState.players.filter(p => p.chips === 0 && !p.isSittingOut);
+    const activePlayers = gameState.players.filter(p => !p.isSittingOut && p.chips > 0);
+    
+    // If we have busted players and game is ending, show notification and reset
+    if (bustedPlayers.length > 0 && (gameState.phase === 'game-end' || gameState.phase === 'showdown')) {
+      showNotification({
+        type: 'game-end',
+        message: `${bustedPlayers.map(p => p.name).join(', ')} ${bustedPlayers.length === 1 ? 'has' : 'have'} busted! Game will reset.`,
+        duration: 10000
+      });
+      
+      // Reset the game state
+      onAction("resetGame");
+      
+      // If we're down to 1 or fewer active players, show waiting message
+      if (activePlayers.length <= 1) {
+        setTimeout(() => {
+          showNotification({
+            type: 'waiting-for-players',
+            message: 'Waiting for more players to join or buy back in...',
+            duration: -1 // Show indefinitely
+          });
+        }, 3000); // Show this message after the bust notification
+      }
+      
+      return;
+    }
+
+    // Regular game state handling
+    if (gameState.phase === 'waiting-for-players' && gameState.players.filter(p => !p.isSittingOut && p.chips > 0).length <= 1) {
       showNotification({
         type: 'waiting-for-players',
         message: 'Waiting for more players to join...',
@@ -182,7 +236,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       showNotification({
         type: 'new-game',
         message: 'New Game Starting...',
-        duration: 5000 // 5 seconds
+        duration: 5000
       });
     } else if (gameState.phase === 'game-end' || gameState.phase === 'showdown') {
       // Find winner either by isWinner flag or last active player
@@ -199,7 +253,8 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
           type: 'game-end',
           message,
           winner,
-          duration: 10000 // 10 seconds for winner notification
+          winningHand: gameState.phase === 'showdown' ? winner.winningHand : undefined,
+          duration: 10000
         });
       }
     }
@@ -209,7 +264,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
         clearTimeout(timeoutId);
       }
     };
-  }, [gameState.phase, gameState.players, notification?.type]);
+  }, [gameState.phase, gameState.players, notification?.type, onAction]);
 
   useEffect(() => {
     if (isPlayerTurn) {
@@ -226,7 +281,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       {/* Game State Notifications */}
       {notification && (
         <div className="fixed inset-0 flex items-center justify-center z-50">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+          <div className="absolute inset-0 bg-black/60" />
           <div className={`transform transition-all duration-500 ${
             notification ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
           }`}>
@@ -256,23 +311,63 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
               </div>
             )}
             {notification.type === 'game-end' && notification.winner && (
-              <div className="bg-gradient-to-b from-yellow-500 to-amber-600 text-white px-12 py-8 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg animate-bounce-small">
-                <div className="text-6xl font-bold mb-4 text-center">🏆</div>
-                <div className="text-4xl font-bold text-center mb-4">{notification.winner.name}</div>
-                <div className="text-2xl text-white/90 text-center">
-                  {notification.message}
-                </div>
-                <div className="text-xl text-white/90 text-center mt-4">
-                  Wins {gameState.pot} chips!
+              <div className="bg-gradient-to-b from-yellow-500 to-amber-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20">
+                <div className="text-4xl font-bold mb-2 text-center">🏆</div>
+                <div className="text-2xl font-bold text-center mb-2">{notification.winner.name} wins!</div>
+                {notification.winningHand ? (
+                  <div className="mt-4">
+                    {/* Winning Hand Type Display */}
+                    <div className="bg-black/30 rounded-lg p-3 mb-4 border border-white/10">
+                      <div className="text-xl font-bold text-center text-yellow-300 mb-1">
+                        {notification.winningHand.name}
+                      </div>
+                      <div className="text-sm text-center text-white/90">
+                        {notification.winningHand.description}
+                      </div>
+                    </div>
+                    
+                    {/* Winning Cards with Highlight Effect */}
+                    <div className="relative">
+                      {/* Glow effect behind cards */}
+                      <div className="absolute inset-0 bg-yellow-400/20 blur-xl rounded-xl" />
+                      
+                      <div className="relative flex justify-center gap-2">
+                        {notification.winningHand.cards.map((card, i) => (
+                          <div
+                            key={`winning-${card.suit}-${card.rank}-${i}`}
+                            className={`w-14 h-20 rounded-lg flex flex-col items-center justify-between p-2 transform transition-transform hover:scale-105 ${
+                              card.suit === "spades" ? "bg-gradient-to-br from-gray-800 to-gray-900" :
+                              card.suit === "hearts" ? "bg-gradient-to-br from-red-500 to-red-600" :
+                              card.suit === "diamonds" ? "bg-gradient-to-br from-blue-500 to-blue-600" :
+                              "bg-gradient-to-br from-green-500 to-green-600"
+                            } shadow-[0_4px_8px_rgba(0,0,0,0.3),0_0_0_2px_rgba(255,255,255,0.1)] border border-white/20 animate-pulse-subtle`}
+                          >
+                            <div className="text-sm font-bold text-white drop-shadow-lg">{card.rank}</div>
+                            <div className="text-xl text-white filter drop-shadow-lg transform transition-transform hover:scale-110">
+                              {card.suit === "hearts" ? "♥" : card.suit === "diamonds" ? "♦" : card.suit === "clubs" ? "♣" : "♠"}
+                            </div>
+                            <div className="text-sm font-bold text-white drop-shadow-lg rotate-180">{card.rank}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-lg text-white/90 text-center mb-4">
+                    {notification.message}
+                  </div>
+                )}
+                <div className="text-lg text-white/90 text-center mt-4">
+                  Wins {notification.winner.chips - (notification.winner.previousChips ?? 0)} chips!
                 </div>
                 {notification.nextGameCountdown && (
-                  <div className="mt-6 text-center">
-                    <div className="text-lg text-white/90 mb-2">
+                  <div className="mt-4 text-center">
+                    <div className="text-sm text-white/90 mb-2">
                       Next hand in: {notification.nextGameCountdown}s
                     </div>
                     <button
                       onClick={() => onAction("sitOut")}
-                      className="px-4 py-2 bg-red-500/80 hover:bg-red-600/80 rounded-lg text-sm transition-colors"
+                      className="px-4 py-2 bg-red-500/80 hover:bg-red-600/80 rounded-lg text-xs transition-colors"
                     >
                       Sit Out Next Hand
                     </button>
@@ -336,7 +431,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
                 style={{ transform: `translate(-50%, -50%) ${player.isTurn ? 'scale(1.1)' : ''}` }}
               >
                 {/* Position Indicators for Opponents */}
-                <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 flex gap-4">
+                <div className="absolute -bottom-16 left-1/2 -translate-x-1/2 flex gap-4">
                   {player.isDealer && (
                     <div className="w-10 h-10 rounded-full bg-gradient-to-b from-yellow-300 to-yellow-600 flex items-center justify-center text-black font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
                       style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
@@ -361,7 +456,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
                 
                 {/* Current Bet Display - Moved lower */}
                 {player.currentBet > 0 && (
-                  <div className="absolute -bottom-32 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+                  <div className="absolute -bottom-40 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
                     <div className="flex flex-wrap justify-center gap-2 min-w-[100px]">
                       {getChipStacks(player.currentBet).map(({ value, count }, i) => (
                         <div
@@ -438,26 +533,41 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
             </div>
           )}
 
-          {/* Position Markers */}
-          <div className="flex gap-4 mb-2">
-            {currentPlayer.isDealer && (
-              <div className="w-12 h-12 rounded-full bg-gradient-to-b from-yellow-300 to-yellow-600 flex items-center justify-center text-black text-lg font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
-                style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
-                D
-              </div>
-            )}
-            {gameState.players[(gameState.players.findIndex(p => p.isDealer) + 1) % gameState.players.length].id === currentPlayer.id && (
-              <div className="w-12 h-12 rounded-full bg-gradient-to-b from-blue-400 to-blue-700 flex items-center justify-center text-white text-lg font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
-                style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
-                SB
-              </div>
-            )}
-            {gameState.players[(gameState.players.findIndex(p => p.isDealer) + 2) % gameState.players.length].id === currentPlayer.id && (
-              <div className="w-12 h-12 rounded-full bg-gradient-to-b from-red-400 to-red-700 flex items-center justify-center text-white text-lg font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
-                style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
-                BB
-              </div>
-            )}
+          {/* Position Markers - Redesigned as an arc above cards */}
+          <div className="relative w-96 h-24 mb-2">
+            {/* Arc background for visual reference */}
+            <div className="absolute inset-0 border-t-4 border-white/5 rounded-t-full" />
+            
+            {/* Position indicators placed along the arc */}
+            <div className="absolute inset-0 flex justify-between items-start px-8">
+              {currentPlayer.isDealer && (
+                <div className="absolute left-8 top-2 transform -translate-y-1/2">
+                  <div className="w-12 h-12 rounded-full bg-gradient-to-b from-yellow-300 to-yellow-600 flex items-center justify-center text-black text-lg font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
+                    style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
+                    D
+                  </div>
+                  <div className="text-xs text-white/80 text-center mt-2">Dealer</div>
+                </div>
+              )}
+              {gameState.players[(gameState.players.findIndex(p => p.isDealer) + 1) % gameState.players.length].id === currentPlayer.id && (
+                <div className="absolute left-1/2 top-0 -translate-x-1/2 transform -translate-y-1/2">
+                  <div className="w-12 h-12 rounded-full bg-gradient-to-b from-blue-400 to-blue-700 flex items-center justify-center text-white text-lg font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
+                    style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
+                    SB
+                  </div>
+                  <div className="text-xs text-white/80 text-center mt-2">Small Blind</div>
+                </div>
+              )}
+              {gameState.players[(gameState.players.findIndex(p => p.isDealer) + 2) % gameState.players.length].id === currentPlayer.id && (
+                <div className="absolute right-8 top-2 transform -translate-y-1/2">
+                  <div className="w-12 h-12 rounded-full bg-gradient-to-b from-red-400 to-red-700 flex items-center justify-center text-white text-lg font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
+                    style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
+                    BB
+                  </div>
+                  <div className="text-xs text-white/80 text-center mt-2">Big Blind</div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Current Player's Bet */}
@@ -526,8 +636,8 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
         </div>
       )}
 
-      {/* Player Controls */}
-      {isPlayerTurn ? (
+      {/* Player Controls - Only show if not in all-in showdown */}
+      {isPlayerTurn && !isAllInShowdown ? (
         <div className="fixed bottom-8 right-8 flex flex-col gap-4 p-6 bg-black/90 backdrop-blur-md rounded-xl border border-white/10 shadow-2xl z-20 max-w-md">
           <div className="flex items-center gap-2 mb-2">
             <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
@@ -652,6 +762,13 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
             </div>
           </div>
         </div>
+      ) : isAllInShowdown ? (
+        <div className="fixed bottom-8 right-8 p-6 bg-black/60 backdrop-blur-sm rounded-xl border border-white/10 shadow-xl z-20">
+          <div className="text-white/60 text-sm italic flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+            All players are all-in - waiting for showdown...
+          </div>
+        </div>
       ) : (
         <div className="fixed bottom-8 right-8 p-6 bg-black/60 backdrop-blur-sm rounded-xl border border-white/10 shadow-xl z-20">
           <div className="text-white/60 text-sm italic">
@@ -695,6 +812,13 @@ const styles = `
   }
   .animate-bounce-small {
     animation: bounce-small 2s infinite;
+  }
+  @keyframes pulse-subtle {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.8; }
+  }
+  .animate-pulse-subtle {
+    animation: pulse-subtle 2s infinite;
   }
 `;
 

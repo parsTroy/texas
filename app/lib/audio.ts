@@ -9,6 +9,7 @@ const AUDIO_FILES = {
   DEAL_TURN: '/sounds/deal-turn.mp3',
   DEAL_RIVER: '/sounds/deal-river.mp3',
   WINNER: '/sounds/winner.mp3',
+  ALL_IN: '/sounds/all-in.mp3',
 } as const;
 
 class AudioManager {
