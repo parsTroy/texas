@@ -130,7 +130,21 @@ function nextPhase() {
       break;
     case "river":
       gameState.phase = "showdown";
-      // Implement showdown logic here
+      // Get active players for showdown
+      const activePlayers = gameState.players.filter(p => p.isActive);
+      
+      // For now, award pot to the last active player who bet
+      const winner = gameState.lastBetPlayerId 
+        ? gameState.players.find(p => p.id === gameState.lastBetPlayerId)
+        : activePlayers[0];
+        
+      if (winner) {
+        winner.chips += gameState.pot;
+        // Emit game state to show the winner getting the pot
+        io.emit("gameState", gameState);
+      }
+      
+      // Start new round after a delay
       setTimeout(() => {
         startNewRound();
       }, 3000);
@@ -182,6 +196,7 @@ function handleAction(action: string, amount: number | undefined, playerId: stri
         if (activePlayers.length === 1) {
           const winner = activePlayers[0];
           winner.chips += gameState.pot;
+          gameState.pot = 0; // Clear the pot after awarding it
           
           // Emit the win state
           io.emit("gameState", gameState);
