@@ -29,7 +29,7 @@ export interface GameState {
   deck: Card[];
   pot: number;
   currentBet: number;
-  phase: "waiting-for-players" | "game-start" | "pre-flop" | "flop" | "turn" | "river" | "showdown" | "game-end";
+  phase: "pre-flop" | "flop" | "turn" | "river" | "showdown";
   activePlayerId: string | null;
   dealerId: string | null;
   smallBlind: number;

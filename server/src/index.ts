@@ -115,6 +115,10 @@ function startNewRound() {
       const [playerCards, remainingDeck] = dealCards(deck, 2);
       player.cards = playerCards;
       deck = remainingDeck;
+      // Reset player state for new round
+      player.hasActed = false;
+      player.isAllIn = false;
+      player.isWinner = false;
     });
 
     // Move dealer button and set blinds
@@ -128,6 +132,7 @@ function startNewRound() {
     gameState.players.forEach((p: Player, i: number) => {
       p.isDealer = i === newDealerIndex;
       p.isTurn = i === firstToActIndex;
+      p.isActive = true;
       
       if (i === smallBlindIndex && p.chips >= SMALL_BLIND) {
         p.chips -= SMALL_BLIND;
@@ -141,11 +146,15 @@ function startNewRound() {
       }
     });
 
-    // Ensure currentBet reflects the actual highest bet
-    gameState.currentBet = Math.max(...gameState.players.map(p => p.currentBet));
+    // Ensure currentBet reflects the big blind
+    gameState.currentBet = BIG_BLIND;
 
     gameState.dealerId = gameState.players[newDealerIndex].id;
     gameState.activePlayerId = gameState.players[firstToActIndex].id;
+
+    // Mark big blind player as not having acted yet (they get to act last pre-flop)
+    const bigBlindPlayer = gameState.players[bigBlindIndex];
+    bigBlindPlayer.hasActed = false;
 
     // Emit updated game state with dealt cards
     io.emit("gameState", gameState);
@@ -159,7 +168,7 @@ function startNewRound() {
     });
 
     startTurnTimer();
-  }, 5000); // Wait 5 seconds before dealing cards
+  }, 5000);
 }
 
 function nextPhase() {
@@ -337,29 +346,64 @@ function handleAction(action: string, amount: number | undefined, playerId: stri
       }, 750);
       return;
     case "check":
-      if (gameState.currentBet > player.currentBet) return;
+      // Allow check if current bet equals player's current bet
+      if (gameState.currentBet > player.currentBet) {
+        console.log("Cannot check - there is a bet to call");
+        return;
+      }
+      
       player.hasActed = true;
       
       // Emit game state first to show the check action
       io.emit("gameState", gameState);
       
-      // After checking, move to next player or phase
+      // After checking, evaluate if betting round is complete
       const activePlayers = gameState.players.filter(p => p.isActive);
-      const allPlayersActed = activePlayers.every(
-        (p: Player) => p.hasActed || p.chips === 0 || p.isAllIn
-      );
-      const allBetsEqual = activePlayers.every(
-        (p: Player) => 
-          p.currentBet === gameState.currentBet || // Has matched the bet
-          !p.isActive || // Has folded
-          p.isAllIn || // Is all-in (might be less than current bet)
-          (p.chips === 0 && p.currentBet < gameState.currentBet) // Can't match bet due to insufficient chips
-      );
+      const allPlayersActed = activePlayers.every(p => p.hasActed || p.isAllIn || p.chips === 0);
+      const allBetsEqual = activePlayers.every(p => p.currentBet === gameState.currentBet || p.isAllIn || p.chips === 0);
+      
+      // Special handling for pre-flop big blind check
+      const isPreFlop = gameState.phase === "pre-flop";
+      const isBigBlindPlayer = player.currentBet === BIG_BLIND && 
+        gameState.players.indexOf(player) === (gameState.players.findIndex(p => p.isDealer) + 2) % gameState.players.length;
+      const allMatchBigBlind = activePlayers.every(p => p.currentBet === BIG_BLIND || !p.isActive);
+      const isPreFlopComplete = isPreFlop && isBigBlindPlayer && allMatchBigBlind && allPlayersActed;
 
-      if (allPlayersActed && allBetsEqual) {
+      console.log("Check action - all players acted:", allPlayersActed);
+      console.log("Check action - all bets equal:", allBetsEqual);
+      console.log("Check action - is pre-flop complete:", isPreFlopComplete);
+      console.log("Current bets:", gameState.players.map(p => ({ 
+        name: p.name, 
+        bet: p.currentBet, 
+        hasActed: p.hasActed,
+        isActive: p.isActive,
+        isDealer: p.isDealer
+      })));
+
+      // Move to next phase if either:
+      // 1. All players have acted and all bets are equal
+      // 2. It's pre-flop and big blind checks after all players have called
+      if (isPreFlopComplete || (allPlayersActed && allBetsEqual)) {
         nextPhase();
       } else {
-        handleNextTurn();
+        // Find next active player
+        let nextPlayerIndex = (playerIndex + 1) % gameState.players.length;
+        while (
+          !gameState.players[nextPlayerIndex].isActive ||
+          gameState.players[nextPlayerIndex].isAllIn ||
+          gameState.players[nextPlayerIndex].chips === 0
+        ) {
+          nextPlayerIndex = (nextPlayerIndex + 1) % gameState.players.length;
+          if (nextPlayerIndex === playerIndex) break;
+        }
+
+        // Update active player
+        gameState.players.forEach((p, i) => {
+          p.isTurn = i === nextPlayerIndex;
+        });
+        gameState.activePlayerId = gameState.players[nextPlayerIndex].id;
+
+        startTurnTimer();
         io.emit("gameState", gameState);
       }
       return;
