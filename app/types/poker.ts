@@ -11,11 +11,10 @@ export interface Player {
   name: string;
   chips: number;
   cards: Card[];
-  isActive: boolean;
   currentBet: number;
   isTurn: boolean;
   isDealer: boolean;
-  hasActed: boolean;
+  isWinner?: boolean;
 }
 
 export interface GameState {
@@ -23,7 +22,7 @@ export interface GameState {
   communityCards: Card[];
   pot: number;
   currentBet: number;
-  phase: "pre-flop" | "flop" | "turn" | "river" | "showdown";
+  phase: "waiting-for-players" | "game-start" | "pre-flop" | "flop" | "turn" | "river" | "showdown" | "game-end";
   activePlayerId: string | null;
   dealerId: string | null;
   smallBlind: number;

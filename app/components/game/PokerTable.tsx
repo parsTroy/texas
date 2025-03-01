@@ -16,6 +16,14 @@ interface ChipStack {
   count: number;
 }
 
+// Add game state notification types
+type GameNotification = {
+  type: 'waiting-for-players' | 'new-game' | 'game-end' | 'hand-winner';
+  message: string;
+  winner?: Player;
+  duration?: number;
+};
+
 // Add chip stack images for different denominations
 const CHIP_IMAGES = {
   1: { emoji: "🔵", color: "from-blue-400 to-blue-600" },
@@ -61,9 +69,72 @@ function getPlayerPosition(index: number, totalPlayers: number): string {
 
 export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
   const [selectedAmount, setSelectedAmount] = useState<number>(0);
+  const [customAmount, setCustomAmount] = useState<number>(0);
   const [timeLeft, setTimeLeft] = useState<number>(TURN_TIME_LIMIT);
+  const [notification, setNotification] = useState<GameNotification | null>(null);
   const currentPlayer = gameState.players.find(p => p.id === playerId);
   const isPlayerTurn = currentPlayer?.isTurn ?? false;
+
+  // Calculate min raise
+  const minRaise = Math.max(
+    gameState.currentBet * 2,
+    gameState.currentBet + gameState.bigBlind
+  );
+
+  // Calculate pot percentages
+  const potPercentages = {
+    ten: Math.floor(gameState.pot * 0.1),
+    quarter: Math.floor(gameState.pot * 0.25),
+    half: Math.floor(gameState.pot * 0.5),
+    eightyPercent: Math.floor(gameState.pot * 0.8)
+  };
+
+  // Handle game state notifications
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+
+    const showNotification = (newNotification: GameNotification) => {
+      setNotification(newNotification);
+      if (newNotification.duration && newNotification.duration > 0) {
+        timeoutId = setTimeout(() => setNotification(null), newNotification.duration);
+      }
+    };
+
+    // Clear any existing notification if phase changes
+    if (notification?.type !== 'waiting-for-players') {
+      setNotification(null);
+    }
+
+    if (gameState.phase === 'waiting-for-players' && gameState.players.length === 1) {
+      showNotification({
+        type: 'waiting-for-players',
+        message: 'Waiting for more players to join...',
+        duration: -1 // Show indefinitely
+      });
+    } else if (gameState.phase === 'game-start') {
+      showNotification({
+        type: 'new-game',
+        message: 'New Game Starting...',
+        duration: 5000 // 5 seconds
+      });
+    } else if (gameState.phase === 'game-end') {
+      const winner = gameState.players.find(p => p.isWinner);
+      if (winner) {
+        showNotification({
+          type: 'game-end',
+          message: `${winner.name} wins the hand!`,
+          winner,
+          duration: 12000 // Increased to 12 seconds
+        });
+      }
+    }
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [gameState.phase, gameState.players.length]);
 
   useEffect(() => {
     if (isPlayerTurn) {
@@ -77,6 +148,47 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
 
   return (
     <div className="relative w-full max-w-4xl aspect-[2/1] mx-auto mt-24">
+      {/* Game State Notifications */}
+      {notification && (
+        <div className="fixed inset-0 flex items-center justify-center z-30 pointer-events-none">
+          <div className={`transform transition-all duration-500 ${
+            notification ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
+          }`}>
+            {notification.type === 'waiting-for-players' && (
+              <div className="bg-gradient-to-b from-purple-500 to-purple-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg">
+                <div className="text-4xl font-bold mb-2">👥 Waiting for Players</div>
+                <div className="text-xl text-white/90 flex items-center gap-3">
+                  {notification.message}
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 rounded-full bg-white/80 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <div className="w-2 h-2 rounded-full bg-white/80 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <div className="w-2 h-2 rounded-full bg-white/80 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            {notification.type === 'new-game' && (
+              <div className="bg-gradient-to-b from-blue-500 to-blue-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg">
+                <div className="text-4xl font-bold mb-2">🎲 New Game</div>
+                <div className="text-xl text-white/90">Dealing cards...</div>
+              </div>
+            )}
+            {notification.type === 'game-end' && notification.winner && (
+              <div className="bg-gradient-to-b from-yellow-500 to-amber-600 text-white px-8 py-6 rounded-xl shadow-[0_8px_32px_rgba(0,0,0,0.4)] border-2 border-white/20 backdrop-blur-lg">
+                <div className="text-4xl font-bold mb-2">🏆 Winner!</div>
+                <div className="text-2xl">{notification.winner.name}</div>
+                <div className="text-xl text-white/90 mt-2">
+                  Wins {gameState.pot} chips
+                </div>
+                <div className="text-sm text-white/70 mt-4">
+                  Next game starting soon...
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Table Surface with 2.5D effect */}
       <div className="absolute inset-0 bg-gradient-to-b from-green-900 to-green-800 rounded-[50%] shadow-[inset_0_0_100px_rgba(0,0,0,0.5),0_20px_60px_-20px_rgba(0,0,0,0.8)] border-8 border-amber-950/50 overflow-hidden">
         {/* Table felt texture */}
@@ -129,7 +241,7 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
                 style={{ transform: `translate(-50%, -50%) ${player.isTurn ? 'scale(1.1)' : ''}` }}
               >
                 {/* Position Indicators for Opponents */}
-                <div className="absolute -bottom-12 left-1/2 -translate-x-1/2 flex gap-4">
+                <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 flex gap-4">
                   {player.isDealer && (
                     <div className="w-10 h-10 rounded-full bg-gradient-to-b from-yellow-300 to-yellow-600 flex items-center justify-center text-black font-bold shadow-[0_4px_8px_rgba(0,0,0,0.3)] border-2 border-t-white/40 border-b-black/40 transform hover:scale-110 transition-transform"
                       style={{ transform: 'rotateX(45deg)', transformStyle: 'preserve-3d' }}>
@@ -152,9 +264,9 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
 
                 <div className="text-sm font-bold mb-1">{player.name}</div>
                 
-                {/* Current Bet Display */}
+                {/* Current Bet Display - Moved lower */}
                 {player.currentBet > 0 && (
-                  <div className="absolute -bottom-20 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
+                  <div className="absolute -bottom-32 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2">
                     <div className="flex flex-wrap justify-center gap-2 min-w-[100px]">
                       {getChipStacks(player.currentBet).map(({ value, count }, i) => (
                         <div
@@ -223,6 +335,14 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       {/* Current Player's Cards and Info - Fixed at bottom */}
       {currentPlayer && (
         <div className="fixed bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-4">
+          {/* Game Status Indicator */}
+          {!isPlayerTurn && gameState.activePlayerId && (
+            <div className="text-lg text-white/90 bg-black/80 px-6 py-3 rounded-full shadow-lg mb-2 flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+              Waiting for {gameState.players.find(p => p.id === gameState.activePlayerId)?.name ?? 'other player'} to act...
+            </div>
+          )}
+
           {/* Position Markers */}
           <div className="flex gap-4 mb-2">
             {currentPlayer.isDealer && (
@@ -312,19 +432,25 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       )}
 
       {/* Player Controls */}
-      {isPlayerTurn && (
-        <div className="fixed bottom-8 right-8 flex flex-col gap-4 p-6 bg-black/90 backdrop-blur-md rounded-xl border border-white/10 shadow-2xl z-20">
-          <div className="flex gap-4">
+      {isPlayerTurn ? (
+        <div className="fixed bottom-8 right-8 flex flex-col gap-4 p-6 bg-black/90 backdrop-blur-md rounded-xl border border-white/10 shadow-2xl z-20 max-w-md">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+            <span className="text-white/90 text-sm">Your turn - {timeLeft}s</span>
+          </div>
+          
+          {/* Action Buttons */}
+          <div className="flex gap-2">
             <button
               onClick={() => onAction("fold")}
-              className="px-6 py-3 bg-gradient-to-b from-red-500 to-red-600 text-white rounded-lg text-lg font-semibold shadow-lg hover:from-red-600 hover:to-red-700 transform hover:scale-105 transition-all duration-200"
+              className="px-4 py-2 bg-gradient-to-b from-red-500 to-red-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-red-600 hover:to-red-700 transform hover:scale-105 transition-all duration-200"
             >
               Fold
             </button>
             {gameState.currentBet === currentPlayer?.currentBet && (
               <button
                 onClick={() => onAction("check")}
-                className="px-6 py-3 bg-gradient-to-b from-blue-500 to-blue-600 text-white rounded-lg text-lg font-semibold shadow-lg hover:from-blue-600 hover:to-blue-700 transform hover:scale-105 transition-all duration-200"
+                className="px-4 py-2 bg-gradient-to-b from-blue-500 to-blue-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-blue-600 hover:to-blue-700 transform hover:scale-105 transition-all duration-200"
               >
                 Check
               </button>
@@ -332,27 +458,96 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
             {gameState.currentBet > (currentPlayer?.currentBet ?? 0) && (
               <button
                 onClick={() => onAction("call")}
-                className="px-6 py-3 bg-gradient-to-b from-blue-500 to-blue-600 text-white rounded-lg text-lg font-semibold shadow-lg hover:from-blue-600 hover:to-blue-700 transform hover:scale-105 transition-all duration-200"
+                className="px-4 py-2 bg-gradient-to-b from-blue-500 to-blue-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-blue-600 hover:to-blue-700 transform hover:scale-105 transition-all duration-200"
               >
                 Call ({gameState.currentBet - (currentPlayer?.currentBet ?? 0)})
               </button>
             )}
-          </div>
-          <div className="flex items-center gap-3">
-            <input
-              type="number"
-              value={selectedAmount}
-              onChange={(e) => setSelectedAmount(Number(e.target.value))}
-              className="w-28 px-3 py-3 rounded-lg text-lg bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              min={gameState.currentBet * 2}
-              max={currentPlayer?.chips ?? 0}
-            />
             <button
-              onClick={() => onAction("raise", selectedAmount)}
-              className="px-6 py-3 bg-gradient-to-b from-green-500 to-green-600 text-white rounded-lg text-lg font-semibold shadow-lg hover:from-green-600 hover:to-green-700 transform hover:scale-105 transition-all duration-200"
+              onClick={() => onAction("raise", currentPlayer?.chips ?? 0)}
+              className="px-4 py-2 bg-gradient-to-b from-purple-500 to-purple-600 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-purple-600 hover:to-purple-700 transform hover:scale-105 transition-all duration-200"
             >
-              Raise
+              All-In
             </button>
+          </div>
+
+          {/* Bet Size Controls */}
+          <div className="grid grid-cols-2 gap-2">
+            {/* Pot Percentage Buttons */}
+            <button
+              onClick={() => {
+                const amount = Math.max(minRaise, Math.min(potPercentages.ten, currentPlayer?.chips ?? 0));
+                setCustomAmount(amount);
+              }}
+              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
+            >
+              10% Pot ({potPercentages.ten})
+            </button>
+            <button
+              onClick={() => {
+                const amount = Math.max(minRaise, Math.min(potPercentages.quarter, currentPlayer?.chips ?? 0));
+                setCustomAmount(amount);
+              }}
+              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
+            >
+              25% Pot ({potPercentages.quarter})
+            </button>
+            <button
+              onClick={() => {
+                const amount = Math.max(minRaise, Math.min(potPercentages.half, currentPlayer?.chips ?? 0));
+                setCustomAmount(amount);
+              }}
+              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
+            >
+              50% Pot ({potPercentages.half})
+            </button>
+            <button
+              onClick={() => {
+                const amount = Math.max(minRaise, Math.min(potPercentages.eightyPercent, currentPlayer?.chips ?? 0));
+                setCustomAmount(amount);
+              }}
+              className="px-3 py-2 bg-gradient-to-b from-green-500/80 to-green-600/80 text-white rounded-lg text-sm font-semibold shadow-lg hover:from-green-600/80 hover:to-green-700/80 transition-all duration-200"
+            >
+              80% Pot ({potPercentages.eightyPercent})
+            </button>
+          </div>
+
+          {/* Custom Raise Input */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <input
+                type="number"
+                value={customAmount}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  setCustomAmount(Math.max(minRaise, Math.min(value, currentPlayer?.chips ?? 0)));
+                }}
+                className="w-full px-3 py-2 rounded-lg text-sm bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                min={minRaise}
+                max={currentPlayer?.chips ?? 0}
+                placeholder={`Min raise: ${minRaise}`}
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-white/50 text-xs">
+                Min: {minRaise}
+              </span>
+            </div>
+            <button
+              onClick={() => onAction("raise", customAmount)}
+              disabled={customAmount < minRaise}
+              className={`px-4 py-2 bg-gradient-to-b text-white rounded-lg text-sm font-semibold shadow-lg transform hover:scale-105 transition-all duration-200 ${
+                customAmount >= minRaise
+                  ? "from-green-500 to-green-600 hover:from-green-600 hover:to-green-700"
+                  : "from-gray-500 to-gray-600 opacity-50 cursor-not-allowed"
+              }`}
+            >
+              Raise to {customAmount}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="fixed bottom-8 right-8 p-6 bg-black/60 backdrop-blur-sm rounded-xl border border-white/10 shadow-xl z-20">
+          <div className="text-white/60 text-sm italic">
+            Waiting for your turn...
           </div>
         </div>
       )}
@@ -368,4 +563,4 @@ export function PokerTable({ gameState, onAction, playerId }: PokerTableProps) {
       </div>
     </div>
   );
-} 
+}
